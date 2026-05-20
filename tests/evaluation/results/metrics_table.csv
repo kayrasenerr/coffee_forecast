@@ -1,0 +1,7 @@
+section,model,n_forecasts,directional_accuracy,brier_score,brier_skill_score,information_coefficient,signal_sharpe_ann,permutation_pvalue,significant_5pct,n_long,n_short
+ar,AR(1),30,0.8,0.1656,0.3377,0.6148,12.911,0.064,False,24,4
+ar,AR(2),30,0.7333,0.1789,0.2843,0.6079,11.426,0.226,False,21,4
+ar,AR(5),30,0.7333,0.1747,0.3014,0.6015,11.763,0.132,False,21,6
+bayesian,BayesianRidge,30,0.2667,0.3303,-0.3212,-0.3771,-6.898,1.0,False,0,30
+ensemble,ensemble_equal_weight,30,0.7333,0.1877,0.2493,0.5673,11.2,0.116,False,19,6
+ensemble,ensemble_regime_switch,30,0.6667,0.2055,0.1781,0.5459,10.652,0.272,False,19,7

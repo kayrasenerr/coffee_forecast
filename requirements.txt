@@ -1,10 +1,32 @@
-yfinance>=0.2.40
-pandas>=2.0.0
-numpy>=1.26.0
-statsmodels>=0.14.0
-hmmlearn>=0.3.0
-arch>=6.3.0
-pydantic>=2.0.0
-matplotlib>=3.8.0
-scikit-learn>=1.4.0
-requests>=2.31.0
+# Coffee Quant — Python dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core scientific stack ──────────────────────────────────────────
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+pyarrow>=14.0          # parquet
+
+# ── Data ingestion ─────────────────────────────────────────────────
+yfinance>=0.2.36       # futures, FX, commodities
+requests>=2.31         # NOAA, NASA POWER, FRED fallback
+fredapi>=0.5           # FRED (optional; needs key)
+pyyaml>=6.0
+
+# ── Config / validation ────────────────────────────────────────────
+pydantic>=2.5
+pydantic-settings>=2.1
+
+# ── Statistical modelling ──────────────────────────────────────────
+statsmodels>=0.14      # SARIMAX, AutoReg, ADF, Granger
+arch>=6.3              # GARCH family
+hmmlearn>=0.3          # Hidden Markov Models
+scikit-learn>=1.4      # BayesianRidge, LASSO, RF, StandardScaler
+
+# ── Interactive tool ───────────────────────────────────────────────
+streamlit>=1.35
+plotly>=5.22
+
+# ── Dev / testing ──────────────────────────────────────────────────
+pytest>=7.4
+pytest-cov>=4.1

@@ -1,72 +1,194 @@
 """
 features/pipeline.py
-Assembles all FeatureBuilders into a single aligned FeatureMatrix.
+====================
+Feature pipeline: assembles all feature transformers and produces
+a unified FeatureFrame ready for modelling.
+
+This is the primary entry point for the feature layer.
+It reads from ingestion sources (or cached raw data) and writes
+to the feature store.
 
 Usage:
-    pipeline = FeaturePipeline(settings.features)
-    fm = pipeline.build(frames)
+    from features.pipeline import FeaturePipeline
+    from contracts.schemas import CoffeeVariety, DataFrequency
+    from config.settings import settings
+    from features.store import ParquetFeatureStore
+
+    store = ParquetFeatureStore(settings.features_dir)
+    pipeline = FeaturePipeline(store=store)
+    frame = pipeline.run(
+        variety=CoffeeVariety.ARABICA,
+        start="2015-01-01",
+        end="2024-12-31",
+        frequency=DataFrequency.DAILY,
+    )
 """
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from typing import Dict, Optional
+
 import pandas as pd
-import numpy as np
-from config.settings import FeatureConfig
-from features.price_features import PriceFeatureBuilder
-from features.volatility_features import VolatilityFeatureBuilder
-from schemas.types import PriceFrame, FeatureMatrix
+
+from contracts.interfaces import FeatureStoreBase
+from contracts.schemas import CoffeeVariety, DataFrequency, FeatureFrame
+from features.climate_features import ClimateFeatureTransformer
+from features.macro_features import MacroFeatureTransformer
+from features.positioning_features import COTFeatureTransformer
+from features.price_features import PriceFeatureTransformer
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class FeaturePipeline:
-    def __init__(self, cfg: FeatureConfig):
-        self.builders = [
-            PriceFeatureBuilder(cfg),
-            VolatilityFeatureBuilder(cfg),
-        ]
+    """
+    Assembles features from multiple transformers into a single FeatureFrame.
 
-    def build(self, frames: dict[str, PriceFrame], symbol: str = "arabica") -> FeatureMatrix:
+    Design:
+      - Each transformer is independent and gets only its required inputs.
+      - Results are joined on a common DatetimeIndex.
+      - Target variable (log return) is appended last.
+      - Saves to feature store if `store` is provided.
+    """
+
+    def __init__(
+        self,
+        store: Optional[FeatureStoreBase] = None,
+        price_transformer: Optional[PriceFeatureTransformer] = None,
+        climate_transformer: Optional[ClimateFeatureTransformer] = None,
+        cot_transformer: Optional[COTFeatureTransformer] = None,
+        macro_transformer: Optional[MacroFeatureTransformer] = None,
+    ):
+        self.store = store
+        self.price_tfm = price_transformer or PriceFeatureTransformer()
+        self.climate_tfm = climate_transformer or ClimateFeatureTransformer()
+        self.cot_tfm = cot_transformer or COTFeatureTransformer()
+        self.macro_tfm = macro_transformer or MacroFeatureTransformer()
+
+    def run(
+        self,
+        raw_inputs: Dict[str, pd.DataFrame],
+        variety: CoffeeVariety,
+        frequency: DataFrequency = DataFrequency.DAILY,
+        store_name: Optional[str] = None,
+    ) -> FeatureFrame:
         """
-        Runs all builders, joins on date index, drops NaN rows.
-        Returns FeatureMatrix with target = next-day log return.
+        Build the full feature matrix.
+
+        Parameters
+        ----------
+        raw_inputs  : dict of source-id → raw DataFrame (from ingestion)
+        variety     : which coffee variety this frame represents
+        frequency   : target temporal frequency
+        store_name  : if given, saves result to feature store
+
+        Returns
+        -------
+        FeatureFrame  with all features joined and aligned
         """
-        parts: list[pd.DataFrame] = []
-        for builder in self.builders:
-            try:
-                df = builder.build(frames)
-                parts.append(df)
-            except ValueError as e:
-                print(f"[WARN] {builder.name}: {e}")
-
-        if not parts:
-            raise RuntimeError("No features built — check data availability")
-
-        combined = pd.concat(parts, axis=1).sort_index()
-
-        # Target: next-day log return (shift -1)
-        log_ret_col = "price_log_ret"
-        if log_ret_col not in combined.columns:
-            raise RuntimeError(f"Expected column '{log_ret_col}' not found")
-
-        target = combined[log_ret_col].shift(-1).rename("target")
-
-        # Drop lookahead and last row (no target)
-        combined = combined.join(target)
-        combined = combined.dropna(subset=["target"])
-        combined = combined.dropna(axis=1, thresh=int(len(combined) * 0.7))  # drop sparse cols
-        combined = combined.ffill().dropna()
-
-        feature_cols = [c for c in combined.columns if c != "target"]
-        return FeatureMatrix(
-            features=combined[feature_cols],
-            target=combined["target"],
-            symbol=symbol,
+        logger.info(
+            "[FeaturePipeline] Building features for %s at freq=%s",
+            variety.value, frequency.value
         )
 
-    def get_hmm_inputs(self, fm: FeatureMatrix) -> np.ndarray:
-        """
-        Compact 3-column observation matrix for HMM:
-        [log_ret, realised_vol, fx_zscore]
-        Falls back gracefully if FX unavailable.
-        """
-        cols = ["price_log_ret", "vol_realised_vol"]
-        fx_col = "price_fx_usd_brl_zscore"
-        if fx_col in fm.features.columns:
-            cols.append(fx_col)
-        return fm.features[cols].dropna().values
+        parts: list[pd.DataFrame] = []
+
+        # ----------------------------------------------------------------
+        # Price features
+        # ----------------------------------------------------------------
+        price_key = f"{variety.value}_futures"
+        if price_key in raw_inputs:
+            price_inputs = {"prices": raw_inputs[price_key]}
+            # Add opposing variety for spread
+            other_key = "robusta_futures" if variety == CoffeeVariety.ARABICA else "arabica_futures"
+            if other_key in raw_inputs:
+                price_inputs["prices_robusta"] = raw_inputs[other_key]
+            pf = self.price_tfm.compute(price_inputs, variety, frequency)
+            parts.append(pf)
+            logger.debug("[FeaturePipeline] Price features: %d cols", len(pf.columns))
+
+        # ----------------------------------------------------------------
+        # Climate features
+        # ----------------------------------------------------------------
+        climate_inputs = {}
+        if "enso" in raw_inputs:
+            climate_inputs["enso"] = raw_inputs["enso"]
+        for k, v in raw_inputs.items():
+            if k.startswith("climate_"):
+                climate_inputs[k] = v
+        if climate_inputs:
+            cf = self.climate_tfm.compute(climate_inputs, variety, frequency)
+            parts.append(cf)
+            logger.debug("[FeaturePipeline] Climate features: %d cols", len(cf.columns))
+
+        # ----------------------------------------------------------------
+        # Positioning features (COT)
+        # ----------------------------------------------------------------
+        cot_key = f"cot_{variety.value}"
+        if cot_key in raw_inputs:
+            cot_inputs = {"cot": raw_inputs[cot_key]}
+            posf = self.cot_tfm.compute(cot_inputs, variety, frequency)
+            parts.append(posf)
+            logger.debug("[FeaturePipeline] Positioning features: %d cols", len(posf.columns))
+
+        # ----------------------------------------------------------------
+        # Macro / FX features
+        # ----------------------------------------------------------------
+        macro_inputs = {k: v for k, v in raw_inputs.items() if k.startswith("fx_")}
+        if macro_inputs:
+            mf = self.macro_tfm.compute(macro_inputs, variety, frequency)
+            parts.append(mf)
+            logger.debug("[FeaturePipeline] Macro features: %d cols", len(mf.columns))
+
+        # ----------------------------------------------------------------
+        # Join all parts on common index
+        # ----------------------------------------------------------------
+        if not parts:
+            raise ValueError("No features computed — check raw_inputs keys")
+
+        combined = pd.concat(parts, axis=1)
+        combined = combined.sort_index()
+
+        # Anchor to the primary price business-day index (avoid calendar-day
+        # blowup from monthly/weekly resamples inside individual transformers)
+        if price_key in raw_inputs:
+            bday_idx = raw_inputs[price_key].index
+            if isinstance(bday_idx, pd.DatetimeIndex):
+                combined = combined.reindex(bday_idx).ffill(limit=10)
+        else:
+            combined = combined.ffill(limit=5)
+
+        # ----------------------------------------------------------------
+        # Append target variable: next-N-day log return
+        # ----------------------------------------------------------------
+        if price_key in raw_inputs:
+            close = raw_inputs[price_key]["close"]
+            close = close.reindex(combined.index).ffill()
+            import numpy as np
+            for horizon in [1, 5, 10, 21]:
+                combined[f"target_log_return_{horizon}d"] = np.log(
+                    close.shift(-horizon) / close
+                )
+
+        # Drop rows where all features are NaN
+        combined = combined.dropna(how="all")
+
+        frame = FeatureFrame(
+            variety=variety,
+            frequency=frequency,
+            feature_names=list(combined.columns),
+            df=combined,
+            description=f"{variety.value} feature matrix at {frequency.value} frequency",
+        )
+
+        if self.store and store_name:
+            self.store.save(frame, store_name)
+
+        logger.info(
+            "[FeaturePipeline] Done. Shape: %s, features: %d",
+            combined.shape, len([c for c in combined.columns if not c.startswith("target")])
+        )
+        return frame

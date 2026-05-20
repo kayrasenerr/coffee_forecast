@@ -1,0 +1,130 @@
+# config/sources.yaml
+# ====================
+# Configuration for each data source adapter.
+# Loaded by ingestion/registry.py at startup.
+#
+# Schema per source:
+#   id:          unique identifier (used as dict key)
+#   adapter:     Python class path relative to ingestion/
+#   enabled:     bool
+#   frequency:   D | W | M
+#   description: human-readable
+#   params:      dict passed as **kwargs to adapter constructor
+
+sources:
+
+  # --------------------------------------------------------------------------
+  # Coffee Futures (via Yahoo Finance — free, no key required)
+  # --------------------------------------------------------------------------
+  arabica_futures:
+    id: arabica_futures
+    adapter: ingestion.futures.YahooFuturesSource
+    enabled: true
+    frequency: D
+    description: "ICE Arabica Coffee Futures (KC=F) via Yahoo Finance"
+    params:
+      ticker: "KC=F"
+      variety: arabica
+      exchange: ICE_NY
+
+  robusta_futures:
+    id: robusta_futures
+    adapter: ingestion.futures.YahooFuturesSource
+    enabled: true
+    frequency: D
+    description: "ICE Robusta Coffee Futures (RC=F) via Yahoo Finance"
+    params:
+      ticker: "RC=F"
+      variety: robusta
+      exchange: ICE_LON
+
+  # --------------------------------------------------------------------------
+  # FX Rates (via FRED)
+  # --------------------------------------------------------------------------
+  fx_usdbrl:
+    id: fx_usdbrl
+    adapter: ingestion.fx.FredFXSource
+    enabled: true
+    frequency: D
+    description: "USD/BRL exchange rate (FRED: DEXBZUS)"
+    params:
+      series_id: DEXBZUS
+      pair: USDBRL
+
+  fx_usdvnd:
+    id: fx_usdvnd
+    adapter: ingestion.fx.FredFXSource
+    enabled: true
+    frequency: D
+    description: "USD/VND (FRED: DEXVNUS)"
+    params:
+      series_id: DEXVNUS
+      pair: USDVND
+
+  fx_usdcop:
+    id: fx_usdcop
+    adapter: ingestion.fx.FredFXSource
+    enabled: true
+    frequency: D
+    description: "USD/COP (FRED: DEXCOUS)"
+    params:
+      series_id: DEXCOUS
+      pair: USDCOP
+
+  fx_eurusd:
+    id: fx_eurusd
+    adapter: ingestion.fx.FredFXSource
+    enabled: true
+    frequency: D
+    description: "EUR/USD (FRED: DEXUSEU)"
+    params:
+      series_id: DEXUSEU
+      pair: EURUSD
+
+  # --------------------------------------------------------------------------
+  # CFTC Commitments of Traders
+  # --------------------------------------------------------------------------
+  cot_arabica:
+    id: cot_arabica
+    adapter: ingestion.cot.CFTCCOTSource
+    enabled: true
+    frequency: W
+    description: "CFTC COT report for Coffee C (Arabica)"
+    params:
+      commodity_code: "083731"    # CFTC code for Coffee C
+      variety: arabica
+
+  # --------------------------------------------------------------------------
+  # Climate / ENSO
+  # --------------------------------------------------------------------------
+  enso_index:
+    id: enso_index
+    adapter: ingestion.climate.NOAAENSOSource
+    enabled: true
+    frequency: M
+    description: "NOAA ONI (Oceanic Niño Index) monthly"
+    params:
+      index_type: ONI
+
+  # --------------------------------------------------------------------------
+  # USDA Production / Export
+  # --------------------------------------------------------------------------
+  usda_psd:
+    id: usda_psd
+    adapter: ingestion.usda.USDAPSDSource
+    enabled: true
+    frequency: M
+    description: "USDA Production, Supply and Distribution (PSD) — coffee"
+    params:
+      commodity_code: "0711100"   # Coffee, green
+
+  # --------------------------------------------------------------------------
+  # ICO Export Statistics
+  # --------------------------------------------------------------------------
+  ico_exports:
+    id: ico_exports
+    adapter: ingestion.ico.ICOExportSource
+    enabled: false   # Requires manual download — enable when data available
+    frequency: M
+    description: "ICO monthly coffee export statistics by country"
+    params: {}

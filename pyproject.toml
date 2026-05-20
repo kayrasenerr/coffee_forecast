@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coffee_quant"
+version = "0.2.0"
+description = "Modular quantitative forecasting and regime-detection system for global coffee markets"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "pyarrow>=14.0",
+    "yfinance>=0.2.36",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "statsmodels>=0.14",
+    "arch>=6.3",
+    "hmmlearn>=0.3",
+    "scikit-learn>=1.4",
+    "streamlit>=1.35",
+    "plotly>=5.22",
+]
+
+[project.optional-dependencies]
+fred = ["fredapi>=0.5"]
+dev  = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.1", "mypy>=1.6", "ipykernel>=6.27"]
+
+[project.scripts]
+coffee-quant     = "orchestration.cli:main"
+coffee-quant-app = "streamlit.cli:main_run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "notebooks*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"

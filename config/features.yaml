@@ -1,0 +1,54 @@
+# config/features.yaml
+# =====================
+# Defines which feature transformers are active and their parameters.
+# Loaded by features/pipeline.py
+
+feature_groups:
+
+  price_features:
+    transformer: features.price_features.PriceFeatureTransformer
+    enabled: true
+    inputs: [arabica_futures, robusta_futures]
+    params:
+      windows: [5, 10, 21, 63]      # return lookback windows
+      include_spread: true           # arabica-robusta spread
+      include_curve: true            # futures curve features (when available)
+      include_momentum: true
+      include_volatility: true
+
+  climate_features:
+    transformer: features.climate_features.ClimateFeatureTransformer
+    enabled: true
+    inputs: [enso_index]
+    params:
+      anomaly_window: 30             # rolling mean for anomaly calculation
+      include_enso: true
+      include_brazil_drought: false  # requires additional data source
+      include_vietnam_rainfall: false
+
+  positioning_features:
+    transformer: features.positioning_features.COTFeatureTransformer
+    enabled: true
+    inputs: [cot_arabica]
+    params:
+      net_position_normalise: true   # normalise by open interest
+      include_extremes: true         # flag extreme positioning
+
+  macro_features:
+    transformer: features.macro_features.MacroFeatureTransformer
+    enabled: true
+    inputs: [fx_usdbrl, fx_usdvnd, fx_eurusd]
+    params:
+      fx_windows: [5, 21]
+      include_brl_momentum: true
+
+  inventory_features:
+    transformer: features.inventory_features.InventoryFeatureTransformer
+    enabled: false   # Enable when certified stock data available
+    inputs: []
+    params: {}
+
+# Feature store name templates
+store:
+  arabica_features: "arabica_features_{frequency}"
+  robusta_features: "robusta_features_{frequency}"

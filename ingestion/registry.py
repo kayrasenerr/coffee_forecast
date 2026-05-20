@@ -1,83 +1,108 @@
 """
 ingestion/registry.py
-Single entry point for all data fetching.
+=====================
+Source registry: loads source configurations from sources.yaml
+and provides factory access to DataSourceBase instances.
 
-DATA_MODE controls the source:
-  'live'      — yfinance (requires network access to Yahoo Finance)
-  'csv'       — local CSV files in cfg.csv_dir
-  'synthetic' — generated data (for testing / CI)
-
-Set via environment variable:  DATA_MODE=live|csv|synthetic
-Or override in DataConfig.
+Usage:
+    from ingestion.registry import source_registry
+    source = source_registry.get("arabica_futures")
+    df = source.fetch_validated(start, end)
 """
-import os
-from datetime import date, timedelta
-from typing import Optional
 
-from config.settings import DataConfig
-from schemas.types import PriceFrame
+from __future__ import annotations
+
+import importlib
+import logging
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import yaml
+
+from contracts.interfaces import DataSourceBase
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "sources.yaml"
 
 
-class DataRegistry:
-    def __init__(self, cfg: DataConfig):
-        self.cfg  = cfg
-        self.mode = os.environ.get("DATA_MODE", cfg.data_mode)
-        self._src = self._build_source()
+class SourceRegistry:
+    """
+    Lazy-loading registry of data source adapters.
 
-    def _build_source(self):
-        if self.mode == "live":
-            from ingestion.futures import YFinanceFuturesSource
-            from ingestion.fx import FXSource
-            return {"futures": YFinanceFuturesSource(), "fx": FXSource()}
-        elif self.mode == "csv":
-            from ingestion.csv_source import CSVDataSource
-            src = CSVDataSource(self.cfg.csv_dir)
-            return {"all": src}
-        else:  # synthetic
-            from ingestion.synthetic import SyntheticCoffeeSource
-            return {"synth": SyntheticCoffeeSource(seed=self.cfg.synthetic_seed)}
+    Reads config/sources.yaml, instantiates adapters on first access.
+    """
 
-    def fetch_all(
-        self,
-        start: Optional[date] = None,
-        end: Optional[date] = None,
-    ) -> dict[str, PriceFrame]:
-        if end is None:
-            end = date.today()
-        if start is None:
-            start = end - timedelta(days=365 * self.cfg.history_years)
+    def __init__(self, config_path: Path = _CONFIG_PATH):
+        self._config_path = config_path
+        self._configs: Dict[str, Dict[str, Any]] = {}
+        self._instances: Dict[str, DataSourceBase] = {}
+        self._loaded = False
 
-        print(f"[DATA] Mode={self.mode}  {start} → {end}")
+    def _load_config(self) -> None:
+        if self._loaded:
+            return
+        with open(self._config_path) as f:
+            data = yaml.safe_load(f)
+        self._configs = data.get("sources", {})
+        self._loaded = True
+        logger.debug("Loaded %d source configs from %s", len(self._configs), self._config_path)
 
-        frames: dict[str, PriceFrame] = {}
+    def _instantiate(self, source_id: str) -> DataSourceBase:
+        """Dynamically import adapter class and instantiate with config params."""
+        cfg = self._configs[source_id]
+        adapter_path: str = cfg["adapter"]      # e.g. "ingestion.futures.YahooFuturesSource"
+        params: dict = cfg.get("params", {})
+        enabled: bool = cfg.get("enabled", True)
 
-        if self.mode == "live":
-            from ingestion.fx import FXSource
-            fs, fx = self._src["futures"], FXSource()
-            frames["arabica"] = fs.fetch(self.cfg.arabica_ticker,  start, end)
-            frames["robusta"] = fs.fetch(self.cfg.robusta_ticker,  start, end)
-            frames["usd_brl"] = fx.fetch(self.cfg.usd_brl_ticker,  start, end)
+        if not enabled:
+            raise ValueError(f"Source '{source_id}' is disabled in sources.yaml")
 
-        elif self.mode == "csv":
-            src = self._src["all"]
-            frames["arabica"] = src.fetch("arabica", start, end)
-            frames["robusta"] = src.fetch("robusta", start, end)
-            frames["usd_brl"] = src.fetch("usd_brl", start, end)
+        # Dynamic import
+        module_path, class_name = adapter_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
 
-        else:  # synthetic
-            synth = self._src["synth"]
-            frames["arabica"] = synth.fetch_arabica(start, end)
-            frames["robusta"] = PriceFrame(symbol="RB=F", data=__import__("pandas").DataFrame(), source="synthetic")
-            frames["usd_brl"] = synth.fetch_usd_brl(start, end)
+        # Inject cache_dir from settings
+        cache_dir = str(settings.raw_dir / source_id)
 
-        self._log_summary(frames)
-        return frames
+        # Coerce enum strings if needed
+        processed_params = _coerce_params(params)
+        return cls(cache_dir=cache_dir, **processed_params)
 
-    def _log_summary(self, frames: dict[str, PriceFrame]) -> None:
-        for name, pf in frames.items():
-            n = len(pf.data)
-            if n > 0:
-                span = f"{pf.data.index[0].date()} → {pf.data.index[-1].date()}"
-                print(f"  {name:12s}: {n:4d} rows  {span}")
-            else:
-                print(f"  {name:12s}: EMPTY (skipped)")
+    def get(self, source_id: str) -> DataSourceBase:
+        """Return (cached) adapter instance for the given source_id."""
+        self._load_config()
+        if source_id not in self._configs:
+            raise KeyError(f"Unknown source: '{source_id}'. Available: {self.list_sources()}")
+        if source_id not in self._instances:
+            self._instances[source_id] = self._instantiate(source_id)
+        return self._instances[source_id]
+
+    def list_sources(self, enabled_only: bool = False) -> list[str]:
+        self._load_config()
+        if enabled_only:
+            return [k for k, v in self._configs.items() if v.get("enabled", True)]
+        return list(self._configs.keys())
+
+    def list_enabled(self) -> list[str]:
+        return self.list_sources(enabled_only=True)
+
+
+def _coerce_params(params: dict) -> dict:
+    """Convert YAML string values to domain types where needed."""
+    from contracts.schemas import CoffeeVariety, Exchange
+    coerced = {}
+    for k, v in params.items():
+        if k == "variety" and isinstance(v, str):
+            coerced[k] = CoffeeVariety(v)
+        elif k == "exchange" and isinstance(v, str):
+            coerced[k] = Exchange(v)
+        else:
+            coerced[k] = v
+    return coerced
+
+
+# Module-level singleton
+source_registry = SourceRegistry()

@@ -1,55 +1,141 @@
 """
 ingestion/futures.py
-Live coffee futures prices via Yahoo Finance.
+====================
+Coffee futures price ingestion.
 
-  KC=F  — ICE Arabica (cents/lb, continuous front month)
-  RB=F  — LIFFE Robusta ($/MT) — may be absent on yfinance
+Primary: Yahoo Finance (yfinance) — free, no key required.
+Columns returned: open, high, low, close, volume, adj_close
 
-In sandboxed environments where finance.yahoo.com is blocked, yfinance
-falls back to internally generated synthetic data automatically (labelled
-"Mode=synthetic" in its output). The schema contract is identical either way.
-
-For production, ensure outbound HTTPS to:
-  query1.finance.yahoo.com
-  query2.finance.yahoo.com
-  finance.yahoo.com
+Arabica : KC=F  (ICE New York, cents/lb)
+Robusta : RC=F  (ICE London, USD/tonne)
 """
-import yfinance as yf
-import pandas as pd
+
+from __future__ import annotations
+
+import logging
 from datetime import date
-from ingestion.base import DataSource
-from schemas.types import PriceFrame
+from typing import Any, Optional
+
+import pandas as pd
+
+from contracts.schemas import CoffeeVariety, Exchange
+from ingestion.base import CachingDataSource, forward_fill_gaps, normalise_index
+
+logger = logging.getLogger(__name__)
 
 
-class YFinanceFuturesSource(DataSource):
-    source_id = "yfinance_futures"
+class YahooFuturesSource(CachingDataSource):
+    """
+    Fetch coffee futures OHLCV from Yahoo Finance via yfinance.
 
-    def fetch(self, symbol: str, start: date, end: date, **kwargs) -> PriceFrame:
+    Parameters
+    ----------
+    ticker   : Yahoo Finance ticker symbol (e.g. "KC=F")
+    variety  : CoffeeVariety.ARABICA or ROBUSTA
+    exchange : Exchange enum value
+    cache_dir: optional local parquet cache directory
+    """
+
+    def __init__(
+        self,
+        ticker: str,
+        variety: CoffeeVariety,
+        exchange: Exchange,
+        cache_dir: Optional[str] = None,
+    ):
+        super().__init__(cache_dir=cache_dir)
+        self.ticker = ticker
+        self.variety = variety
+        self.exchange = exchange
+        self.source_id = f"yahoo_{variety.value}_futures"
+
+    def _fetch_remote(self, start: date, end: date, **kwargs: Any) -> pd.DataFrame:
         try:
-            raw = yf.download(
-                symbol,
-                start=str(start),
-                end=str(end),
+            import yfinance as yf
+        except ImportError as e:
+            raise ImportError("pip install yfinance") from e
+
+        ticker_obj = yf.Ticker(self.ticker)
+        df = ticker_obj.history(
+            start=start.isoformat(),
+            end=end.isoformat(),
+            interval="1d",
+            auto_adjust=True,
+        )
+        if df.empty:
+            logger.warning("[%s] Empty response for %s → %s", self.source_id, start, end)
+            return pd.DataFrame()
+
+        df = df.rename(columns=str.lower)
+        keep_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+        df = df[keep_cols].copy()
+        df["variety"] = self.variety.value
+        df["exchange"] = self.exchange.value
+        df["symbol"] = self.ticker
+        return df
+
+    def validate(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        df = normalise_index(df)
+        # Remove zero or negative prices
+        for col in ["open", "high", "low", "close"]:
+            if col in df.columns:
+                df = df[df[col] > 0]
+        df = forward_fill_gaps(df, max_gap_days=5)
+        return df
+
+
+class MultiContractFuturesSource(CachingDataSource):
+    """
+    Fetch multiple futures contracts (M1, M2, M3) for curve construction.
+
+    Note: Free sources only provide continuous front-month.
+    This stub is ready for ICE direct feed integration.
+    """
+
+    def __init__(self, variety: CoffeeVariety, cache_dir: Optional[str] = None):
+        super().__init__(cache_dir=cache_dir)
+        self.variety = variety
+        self.source_id = f"multi_contract_{variety.value}"
+
+        # Ticker map: tenor label → Yahoo symbol
+        # These are continuous contracts — use for spread/curve approximation
+        if variety == CoffeeVariety.ARABICA:
+            self.tickers: dict[str, str] = {
+                "M1": "KC=F",
+                # M2, M3 require paid data feed
+            }
+        else:
+            self.tickers = {
+                "M1": "RC=F",
+            }
+
+    def _fetch_remote(self, start: date, end: date, **kwargs: Any) -> pd.DataFrame:
+        try:
+            import yfinance as yf
+        except ImportError as e:
+            raise ImportError("pip install yfinance") from e
+
+        frames: list[pd.DataFrame] = []
+        for tenor, ticker in self.tickers.items():
+            raw = yf.Ticker(ticker).history(
+                start=start.isoformat(),
+                end=end.isoformat(),
                 interval="1d",
                 auto_adjust=True,
-                progress=False,
             )
-        except Exception as e:
-            print(f"[WARN] {symbol}: yfinance fetch failed ({e})")
-            return PriceFrame(symbol=symbol, data=pd.DataFrame(), source=self.source_id)
+            if raw.empty:
+                continue
+            close = raw["Close"].rename(f"close_{tenor}")
+            frames.append(close)
 
-        if raw.empty:
-            print(f"[WARN] {symbol}: empty response from yfinance")
-            return PriceFrame(symbol=symbol, data=pd.DataFrame(), source=self.source_id)
+        if not frames:
+            return pd.DataFrame()
 
-        # yfinance ≥0.2 returns MultiIndex columns when downloading a single ticker
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
+        df = pd.concat(frames, axis=1)
+        df["variety"] = self.variety.value
+        return df
 
-        raw = raw.rename(columns={
-            "Open": "open", "High": "high", "Low": "low",
-            "Close": "close", "Volume": "volume",
-        })
-        raw = self._validate_frame(raw)
-        available = [c for c in ["open", "high", "low", "close", "volume"] if c in raw.columns]
-        return PriceFrame(symbol=symbol, data=raw[available], source=self.source_id)
+    def validate(self, df: pd.DataFrame) -> pd.DataFrame:
+        return normalise_index(df)
