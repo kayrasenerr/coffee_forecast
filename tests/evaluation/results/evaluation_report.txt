@@ -73,11 +73,11 @@
     AIC                                        1334.43
     BIC                                        1352.08
     N OOS forecasts                            19
-    Vol Forecast RMSE (ann)                    0.2106
-    Vol Forecast MAE  (ann)                    0.1786
-    Vol Forecast Corr                          -0.0220
+    Vol Forecast RMSE (ann)                    0.2100
+    Vol Forecast MAE  (ann)                    0.1794
+    Vol Forecast Corr                          -0.0300
     Current cond. vol (ann)                    34.06%
-    10-day forecast vol                        69.55%
+    10-day forecast vol                        69.76%
     Current vol regime                         extreme
     No remaining ARCH                          True
   Vol regime distribution over test period:
@@ -88,11 +88,11 @@
     AIC                                        1337.76
     BIC                                        1355.41
     N OOS forecasts                            19
-    Vol Forecast RMSE (ann)                    0.2150
+    Vol Forecast RMSE (ann)                    0.2155
     Vol Forecast MAE  (ann)                    0.1807
-    Vol Forecast Corr                          -0.0312
+    Vol Forecast Corr                          -0.0409
     Current cond. vol (ann)                    33.26%
-    10-day forecast vol                        67.00%
+    10-day forecast vol                        66.72%
     Current vol regime                         extreme
     No remaining ARCH                          True
   Vol regime distribution over test period:
